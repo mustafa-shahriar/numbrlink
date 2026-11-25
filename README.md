@@ -67,8 +67,12 @@ npx vercel@latest login
 npx vercel@latest --prod
 ```
 
-`vercel.json` pins the Vite framework, build command and `dist` output. Vercel
-Functions serve WebSockets on all plans, but:
+`vercel.json` pins the Vite framework, build command and `dist` output. The
+project is connected to
+[GitHub](https://github.com/mustafa-shahriar/numbrlink), so pushes to `main`
+deploy to production automatically and pull requests get preview URLs.
+
+Vercel Functions serve WebSockets on all plans, but:
 
 > **Caveat — in-memory rooms.** Rooms live in the memory of the function
 > instance handling the connection, and Vercel does not guarantee that two
