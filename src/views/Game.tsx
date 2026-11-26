@@ -19,6 +19,7 @@ import {
   startRace,
   showToast,
   youId,
+  type FatalState,
   type PlayerState,
 } from '../store'
 
@@ -39,11 +40,11 @@ export default function Game(props: Props) {
   const [now, setNow] = createSignal(Date.now())
   const [soloLinks, setSoloLinks] = createSignal<LinkShape[]>([])
   const [soloStatus, setSoloStatus] = createSignal<SoloStatus>('ready')
-  const [soloReason, setSoloReason] = createSignal<string | null>(null)
   const [soloDeadline, setSoloDeadline] = createSignal(0)
   const [soloStarted, setSoloStarted] = createSignal(0)
   const [soloTime, setSoloTime] = createSignal(0)
   const [newBest, setNewBest] = createSignal(false)
+  const [soloFatal, setSoloFatal] = createSignal<FatalState | null>(null)
 
   let lastSeed: number | null = null
   let lastCount = ''
@@ -114,11 +115,11 @@ export default function Game(props: Props) {
     lastSeed = seed
     setSoloLinks([])
     setSoloStatus('ready')
-    setSoloReason(null)
     setSoloDeadline(0)
     setSoloStarted(0)
     setSoloTime(0)
     setNewBest(false)
+    setSoloFatal(null)
     lastCount = ''
     lastTurn = null
   })
@@ -155,7 +156,13 @@ export default function Game(props: Props) {
   createEffect(() => {
     if (online() || soloStatus() !== 'playing') return
     if (now() <= soloDeadline()) return
-    finishSolo('timeout')
+    finishSolo('timeout', {
+      playerId: 'solo',
+      linkIndex: soloLinks().length,
+      reason: 'timeout',
+      path: null,
+      at: null,
+    })
   })
 
   createEffect(() => {
@@ -176,10 +183,10 @@ export default function Game(props: Props) {
     else soundMistake()
   })
 
-  function finishSolo(reason: string | null) {
+  function finishSolo(reason: string | null, fatal: FatalState | null = null) {
     if (soloStatus() !== 'playing') return
     setSoloStatus('done')
-    setSoloReason(reason)
+    setSoloFatal(reason ? fatal : null)
     if (reason === null) {
       const time = Math.round(Date.now() - soloStarted())
       setSoloTime(time)
@@ -203,7 +210,20 @@ export default function Game(props: Props) {
       path: points,
     })
     if (!result.ok) {
-      finishSolo(result.reason)
+      const at =
+        result.at ??
+        (result.reason === 'not-at-target'
+          ? points[points.length - 1]
+          : result.reason === 'not-at-start'
+            ? points[0]
+            : null)
+      finishSolo(result.reason, {
+        playerId: 'solo',
+        linkIndex: soloLinks().length,
+        reason: result.reason,
+        path: points,
+        at,
+      })
       return
     }
     const next = [...soloLinks(), { by: 'solo', points }]
@@ -228,18 +248,72 @@ export default function Game(props: Props) {
     return `${winner()!.name} wins`
   }
 
-  const resultSubtitle = () => {
+  const fatal = (): FatalState | null => (online() ? (room()?.fatal ?? null) : soloFatal())
+
+  const fatalView = createMemo(() => {
+    const current = fatal()
+    if (!current) return null
+    const from = current.linkIndex + 1
+    return {
+      path: current.path,
+      at: current.at,
+      label: reasonText(current.reason),
+      from: from <= TOTAL ? from : null,
+      to: from + 1 <= TOTAL ? from + 1 : null,
+    }
+  })
+
+  const success = () => (online() ? room()?.winnerId === youId() : soloCompleted())
+
+  type Segment = { text: string; tone?: 'bad' | 'good' }
+
+  const fatalName = () => {
+    const current = fatal()
+    if (!current) return ''
+    if (current.playerId === 'solo' || current.playerId === youId()) return 'You'
+    return players().find((player) => player.id === current.playerId)?.name ?? 'A player'
+  }
+
+  const fatalSpan = (linkIndex: number) =>
+    linkIndex + 1 <= LINK_COUNT ? ` while linking ${linkIndex + 1} → ${linkIndex + 2}` : ''
+
+  /** Plain-English account of how the match ended. */
+  const decisiveSegments = (): Segment[] => {
     if (!online()) {
       if (soloCompleted()) {
-        return newBest() ? 'A brand new personal best. Flawless wiring.' : 'All fourteen links, no crossings. Beautiful.'
+        return [{ text: `You closed 14 → 15 in ${formatTime(soloTime())}.`, tone: 'good' }]
       }
-      return `You linked ${soloLinks().length} of ${LINK_COUNT} — ${reasonText(soloReason())}.`
+      const current = soloFatal()
+      if (!current) return [{ text: `You linked ${soloLinks().length} of ${LINK_COUNT}.` }]
+      return [
+        { text: 'You ' },
+        { text: reasonText(current.reason), tone: 'bad' },
+        { text: `${fatalSpan(current.linkIndex)}.` },
+      ]
     }
-    if (!winner()) return 'Everyone crossed a line. The board won.'
-    const mine = winner()!.id === youId()
-    const name = mine ? 'You' : winner()!.name
-    if (chainComplete()) return `${name} closed the final link ${TOTAL - 1} → ${TOTAL}.`
-    return mine ? 'You were the last player standing.' : `${name} was the last player standing.`
+
+    if (chainComplete()) {
+      const current = winner()
+      const who = current?.id === youId() ? 'You' : (current?.name ?? 'Someone')
+      return [{ text: `${who} closed the final link 14 → 15.`, tone: current?.id === youId() ? 'good' : undefined }]
+    }
+
+    const current = fatal()
+    if (!current) {
+      const currentWinner = winner()
+      if (!currentWinner) return [{ text: 'The board won.' }]
+      return [
+        currentWinner.id === youId()
+          ? { text: 'You were the last one standing.' }
+          : { text: `${currentWinner.name} was the last one standing.` },
+      ]
+    }
+
+    return [
+      { text: `${fatalName()} ` },
+      { text: reasonText(current.reason), tone: 'bad' },
+      { text: `${fatalSpan(current.linkIndex)}.` },
+    ]
   }
 
   function playerStateText(player: PlayerState) {
@@ -248,18 +322,6 @@ export default function Game(props: Props) {
     if (player.status === 'out') return `out — ${reasonText(player.failReason)}`
     if (room()?.turnId === player.id) return 'drawing…'
     return 'waiting'
-  }
-
-  const sortedPlayers = () => {
-    const list = [...players()]
-    list.sort((a, b) => {
-      if (a.status === 'won') return -1
-      if (b.status === 'won') return 1
-      if (a.status === 'out' && b.status !== 'out') return 1
-      if (b.status === 'out' && a.status !== 'out') return -1
-      return b.links - a.links
-    })
-    return list
   }
 
   return (
@@ -336,131 +398,116 @@ export default function Game(props: Props) {
       </Show>
 
       <div class="board-stage">
-        <div class="board-shell">
-          <CanvasBoard
-            seed={props.seed}
-            nodes={nodes()}
-            links={links()}
-            linkIndex={linkIndex()}
-            status={playStatus()}
-            enabled={canDraw()}
-            deadline={turnDeadline()}
-            turnId={turnId()}
-            turnColor={turnColor()}
-            myColor={myColor()}
-            colorOf={colorOf}
-            onCommit={handleCommit}
-            onBadStart={() => showToast(`Start on the glowing number ${linkIndex() + 1}`)}
-          />
+        <div class="board-column" classList={{ done: playStatus() === 'done' }}>
+          <div class="board-shell" classList={{ compact: playStatus() === 'done' }}>
+            <CanvasBoard
+              seed={props.seed}
+              nodes={nodes()}
+              links={links()}
+              linkIndex={linkIndex()}
+              status={playStatus()}
+              enabled={canDraw()}
+              deadline={turnDeadline()}
+              turnId={turnId()}
+              turnColor={turnColor()}
+              myColor={myColor()}
+              colorOf={colorOf}
+              fatal={fatalView()}
+              onCommit={handleCommit}
+              onBadStart={() => showToast(`Start on the glowing number ${linkIndex() + 1}`)}
+            />
 
-          <Show when={countdownLabel()} keyed>
-            {(label) => (
-              <div class="countdown-overlay">
-                <span class="countdown-eyebrow">Get ready</span>
-                <span class="countdown-num" classList={{ go: label === 'GO!' }}>
-                  {label}
-                </span>
-                <span class="countdown-hint">
-                  {online() && players().length > 1
-                    ? `Turn order: ${players().map((player) => player.name).join(' → ')}`
-                    : 'Draw 1 → 2 without crossing a line'}
-                </span>
-              </div>
-            )}
-          </Show>
+            <Show when={countdownLabel()} keyed>
+              {(label) => (
+                <div class="countdown-overlay">
+                  <span class="countdown-eyebrow">Get ready</span>
+                  <span class="countdown-num" classList={{ go: label === 'GO!' }}>
+                    {label}
+                  </span>
+                  <span class="countdown-hint">
+                    {online() && players().length > 1
+                      ? `Turn order: ${players().map((player) => player.name).join(' → ')}`
+                      : 'Draw 1 → 2 without crossing a line'}
+                  </span>
+                </div>
+              )}
+            </Show>
+          </div>
 
           <Show when={playStatus() === 'done'}>
-            <div class="board-overlay">
-              <div class="results-card">
-                <div
-                  class="results-badge"
-                  classList={{
-                    gold: online() ? room()?.winnerId === youId() : soloCompleted(),
-                  }}
-                >
+            <div class="over-panel" classList={{ win: success() }}>
+              <div class="over-top">
+                <span class="over-badge" classList={{ win: success() }}>
                   {online() ? (winner() ? '♛' : '✕') : soloCompleted() ? '✓' : '✕'}
-                </div>
-                <h2>{resultTitle()}</h2>
-                <p class="results-sub">{resultSubtitle()}</p>
+                </span>
 
+                <div class="over-copy">
+                  <h2>{resultTitle()}</h2>
+                  <p>
+                    <For each={decisiveSegments()}>
+                      {(segment) => (
+                        <span classList={{ bad: segment.tone === 'bad', good: segment.tone === 'good' }}>
+                          {segment.text}
+                        </span>
+                      )}
+                    </For>
+                  </p>
+                </div>
+
+                <div class="over-stats">
+                  <span class="over-stat">
+                    links <b>{linkIndex()}/{LINK_COUNT}</b>
+                  </span>
+                  <Show when={!online()}>
+                    <span class="over-stat">
+                      {soloCompleted() ? 'time' : 'best'}{' '}
+                      <b>
+                        {soloCompleted()
+                          ? formatTime(soloTime())
+                          : bestTime() !== null
+                            ? formatTime(bestTime())
+                            : '—'}
+                      </b>
+                    </span>
+                    <Show when={newBest()}>
+                      <span class="over-stat bright">new best</span>
+                    </Show>
+                  </Show>
+                  <Show when={online()}>
+                    <span class="over-stat">
+                      room <b>{room()?.code}</b>
+                    </span>
+                  </Show>
+                </div>
+              </div>
+
+              <div class="over-actions">
                 <Show when={!online()}>
-                  <div class="solo-result">
-                    <div class="big-time" classList={{ failed: !soloCompleted() }}>
-                      {soloCompleted() ? formatTime(soloTime()) : `${soloLinks().length}/${LINK_COUNT}`}
-                    </div>
-                    <div class="solo-meta">
-                      <span>{soloCompleted() ? (newBest() ? 'new best' : 'links') : 'links before failing'}</span>
-                      <Show when={bestTime() !== null && !newBest()}>
-                        <span>best {formatTime(bestTime())}</span>
-                      </Show>
-                    </div>
-                  </div>
+                  <button class="btn primary" onClick={() => startPractice()}>
+                    Try again
+                  </button>
+                  <button class="btn ghost" onClick={() => goHome()}>
+                    Back home
+                  </button>
                 </Show>
 
                 <Show when={online()}>
-                  <div class="result-list">
-                    <For each={sortedPlayers()}>
-                      {(player) => (
-                        <div class="result-row" classList={{ me: player.id === youId() }}>
-                          <span class="result-rank" style={{ '--player-color': seatColor(player.seat) }}>
-                            {player.status === 'won' ? '♛' : player.status === 'out' ? '✕' : '•'}
-                          </span>
-                          <div class="result-main">
-                            <div class="result-name">
-                              {player.name}
-                              <Show when={player.id === youId()}>
-                                <span class="tag-you">you</span>
-                              </Show>
-                              <Show when={!player.connected}>
-                                <span class="tag-host">offline</span>
-                              </Show>
-                            </div>
-                            <div class="result-sub">
-                              {player.status === 'won'
-                                ? 'winner'
-                                : player.status === 'out'
-                                  ? reasonText(player.failReason)
-                                  : 'still standing'}{' '}
-                              · {player.links} link{player.links === 1 ? '' : 's'}
-                            </div>
-                          </div>
-                          <span class="result-time">
-                            {player.status === 'won' ? 'WIN' : player.status === 'out' ? 'OUT' : 'ALIVE'}
-                          </span>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-
-                <div class="results-actions">
-                  <Show when={!online()}>
-                    <button class="btn primary block" onClick={() => startPractice()}>
-                      Try again
-                    </button>
-                    <button class="btn ghost block" onClick={() => goHome()}>
-                      Back home
-                    </button>
-                  </Show>
-
-                  <Show when={online()}>
-                    <Show
-                      when={isHost()}
-                      fallback={<p class="fine-print center">Waiting for the host to start a new match…</p>}
+                  <Show
+                    when={isHost()}
+                    fallback={<p class="fine-print over-wait">Waiting for the host to start a new match…</p>}
+                  >
+                    <button
+                      class="btn primary"
+                      disabled={connection() !== 'open'}
+                      onClick={() => startRace()}
                     >
-                      <button
-                        class="btn primary block"
-                        disabled={connection() !== 'open'}
-                        onClick={() => startRace()}
-                      >
-                        New match
-                      </button>
-                    </Show>
-                    <button class="btn ghost block" onClick={() => leaveRoom()}>
-                      Leave room
+                      New match
                     </button>
                   </Show>
-                </div>
+                  <button class="btn ghost" onClick={() => leaveRoom()}>
+                    Leave room
+                  </button>
+                </Show>
               </div>
             </div>
           </Show>

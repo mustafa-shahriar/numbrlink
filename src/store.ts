@@ -19,6 +19,15 @@ export type LinkState = {
   points: Point[]
 }
 
+/** The stroke (or timeout) that eliminated the most recent player. */
+export type FatalState = {
+  playerId: string
+  linkIndex: number
+  reason: string
+  path: Point[] | null
+  at: Point | null
+}
+
 export type RoomStatus = 'lobby' | 'countdown' | 'playing' | 'done'
 
 export type RoomState = {
@@ -34,6 +43,7 @@ export type RoomState = {
   nextTo: number | null
   links: LinkState[]
   winnerId: string | null
+  fatal: FatalState | null
   players: PlayerState[]
 }
 

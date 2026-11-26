@@ -16,9 +16,11 @@ let playerSeq = 0
  *   failReason: string | null, links: number, connected: boolean,
  *   ws: import('ws').WebSocket | null, graceTimer: NodeJS.Timeout | null }} Player
  * @typedef {{ by: string, points: { x: number, y: number }[] }} Link
+ * @typedef {{ playerId: string, linkIndex: number, reason: string,
+ *   path: { x: number, y: number }[] | null, at: { x: number, y: number } | null }} Fatal
  * @typedef {{ code: string, hostId: string | null, status: 'lobby'|'countdown'|'playing'|'done',
  *   round: number, seed: number, startAt: number, order: string[], turnId: string | null,
- *   turnDeadline: number, links: Link[], winnerId: string | null,
+ *   turnDeadline: number, links: Link[], winnerId: string | null, fatal: Fatal | null,
  *   players: Map<string, Player>, timer: NodeJS.Timeout | null,
  *   deadlineTimer: NodeJS.Timeout | null }} Room
  */
@@ -79,6 +81,7 @@ function publicRoom(room) {
     nextTo: open ? linkIndex + 2 : null,
     links: room.links,
     winnerId: room.winnerId,
+    fatal: room.fatal,
     players: [...room.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
@@ -232,11 +235,18 @@ function beginTurn(room, playerId) {
   }, TURN_MS + 20)
 }
 
-function failTurn(room, player, reason) {
+function failTurn(room, player, reason, attempt = null) {
   clearTimeout(room.deadlineTimer)
   room.deadlineTimer = null
   player.status = 'out'
   player.failReason = reason
+  room.fatal = {
+    playerId: player.id,
+    linkIndex: room.links.length,
+    reason,
+    path: attempt?.path ?? null,
+    at: attempt?.at ?? null,
+  }
   room.turnId = null
   room.turnDeadline = 0
   if (!maybeEnd(room)) beginTurn(room, nextActive(room, player.id))
@@ -252,6 +262,7 @@ function startRound(room) {
   room.order = [...room.players.values()].map((p) => p.id)
   room.links = []
   room.winnerId = null
+  room.fatal = null
   room.turnId = null
   room.turnDeadline = 0
 
@@ -341,6 +352,7 @@ function handleCreate(ws, msg) {
     turnDeadline: 0,
     links: [],
     winnerId: null,
+    fatal: null,
     players: new Map([[player.id, player]]),
     timer: null,
     deadlineTimer: null,
@@ -428,7 +440,15 @@ function handleDraw(ws, msg) {
   })
 
   if (!result.ok) {
-    failTurn(room, player, result.reason)
+    // Keep the rejected stroke so every client can see exactly where it failed.
+    const at =
+      result.at ??
+      (result.reason === 'not-at-target'
+        ? path[path.length - 1]
+        : result.reason === 'not-at-start'
+          ? path[0]
+          : null)
+    failTurn(room, player, result.reason, { path, at })
     return
   }
 

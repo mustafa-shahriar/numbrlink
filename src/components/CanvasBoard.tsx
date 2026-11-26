@@ -4,6 +4,15 @@ import { MAX_POINTS, TURN_MS, checkSegment, nodeRadius, type Point } from '../ga
 
 type LinkShape = { by: string; points: Point[] }
 
+/** The stroke that eliminated a player, kept on screen after the match ends. */
+export type FatalView = {
+  path: Point[] | null
+  at: Point | null
+  label: string
+  from: number | null
+  to: number | null
+}
+
 type Props = {
   seed: number
   nodes: BoardNode[]
@@ -16,6 +25,7 @@ type Props = {
   turnColor: string
   myColor: string
   colorOf: (playerId: string) => string
+  fatal?: FatalView | null
   onCommit: (path: Point[]) => void
   onBadStart: () => void
 }
@@ -89,6 +99,10 @@ export default function CanvasBoard(props: Props) {
   )
 
   const linkPoints = createMemo(() => props.links.map((link) => link.points))
+
+  const fatalPath = createMemo(() =>
+    props.fatal?.path && props.fatal.path.length > 1 ? trace(props.fatal.path) : null,
+  )
 
   const nodePoints = createMemo(() =>
     props.nodes.map((node) => ({
@@ -339,6 +353,28 @@ export default function CanvasBoard(props: Props) {
     context.globalAlpha = 1
     context.shadowBlur = 0
 
+    const failed = props.status === 'done' ? (props.fatal ?? null) : null
+
+    // The stroke that ended the run stays on the board, dashed and red.
+    if (failed) {
+      const deadPath = fatalPath()
+      if (deadPath) {
+        context.save()
+        context.setLineDash([16, 13])
+        context.globalAlpha = 0.22
+        context.strokeStyle = '#ff6478'
+        context.lineWidth = 26
+        context.shadowColor = '#ff6478'
+        context.shadowBlur = 26
+        context.stroke(deadPath)
+        context.globalAlpha = 0.95
+        context.lineWidth = 6
+        context.shadowBlur = 10
+        context.stroke(deadPath)
+        context.restore()
+      }
+    }
+
     const live = stroke ?? pending
     if (live && live.length > 1) {
       const fatal = stroke ? strokeFatal : pendingFatal
@@ -433,11 +469,97 @@ export default function CanvasBoard(props: Props) {
         }
       }
 
+      if (failed && (failed.from === i + 1 || failed.to === i + 1)) {
+        context.save()
+        context.beginPath()
+        context.arc(x, y, r + 10, 0, TAU)
+        context.setLineDash([9, 9])
+        context.strokeStyle = 'rgba(255, 100, 120, 0.85)'
+        context.lineWidth = 3
+        context.stroke()
+        context.restore()
+      }
+
       context.fillStyle = isDone ? '#05231a' : '#dbe2f2'
       context.font = `700 ${Math.round(33 * item.node.size)}px "JetBrains Mono", ui-monospace, monospace`
       context.textAlign = 'center'
       context.textBaseline = 'middle'
       context.fillText(String(i + 1), x, y + 1)
+    }
+
+    if (failed?.at) {
+      const x = failed.at.x * 1000
+      const y = failed.at.y * 1000
+      const beat = 0.5 + 0.5 * Math.sin(now / 240)
+      // Keep the marker and label readable at any board size: size in CSS pixels,
+      // then convert to the canvas' 1000-unit space.
+      const toUnits = (css: number) => (css * 1000) / cssSize
+
+      context.save()
+      // Expanding pulse ring.
+      context.beginPath()
+      context.arc(x, y, toUnits(15 + beat * 9), 0, TAU)
+      context.strokeStyle = `rgba(255, 100, 120, ${0.5 - beat * 0.24})`
+      context.lineWidth = toUnits(2)
+      context.stroke()
+
+      // Solid hit marker with a cross.
+      context.beginPath()
+      context.arc(x, y, toUnits(9), 0, TAU)
+      context.fillStyle = 'rgba(255, 100, 120, 0.16)'
+      context.fill()
+      context.strokeStyle = '#ff6478'
+      context.lineWidth = toUnits(2.5)
+      context.stroke()
+
+      const cross = toUnits(4.5)
+      context.beginPath()
+      context.moveTo(x - cross, y - cross)
+      context.lineTo(x + cross, y + cross)
+      context.moveTo(x + cross, y - cross)
+      context.lineTo(x - cross, y + cross)
+      context.lineWidth = toUnits(3)
+      context.stroke()
+
+      // Reason label, clamped to stay on the board.
+      const label = failed.label
+      const fontPx = toUnits(12.5)
+      const fontFamily = '"Space Grotesk", "Segoe UI", system-ui, sans-serif'
+      context.font = `600 ${fontPx}px ${fontFamily}`
+      const pad = toUnits(10)
+      const pillW = Math.min(context.measureText(label).width + pad * 2, 940)
+      const pillH = fontPx * 1.9
+      const gap = toUnits(13)
+      let px = x + gap
+      if (px + pillW > 980) px = x - gap - pillW
+      px = Math.max(toUnits(4), Math.min(px, 1000 - toUnits(4) - pillW))
+      const py = Math.max(toUnits(3), Math.min(y - pillH / 2, 1000 - toUnits(3) - pillH))
+
+      context.beginPath()
+      context.moveTo(x + (px > x ? toUnits(10) : -toUnits(10)), y)
+      context.lineTo(px > x ? px : px + pillW, y)
+      context.strokeStyle = 'rgba(255, 100, 120, 0.35)'
+      context.lineWidth = toUnits(1.5)
+      context.stroke()
+
+      context.beginPath()
+      if (typeof context.roundRect === 'function') {
+        context.roundRect(px, py, pillW, pillH, toUnits(7))
+      } else {
+        context.rect(px, py, pillW, pillH)
+      }
+      context.fillStyle = 'rgba(28, 10, 15, 0.92)'
+      context.fill()
+      context.strokeStyle = 'rgba(255, 100, 120, 0.5)'
+      context.lineWidth = toUnits(1.5)
+      context.stroke()
+
+      context.fillStyle = '#ffb3bd'
+      context.font = `600 ${fontPx}px ${fontFamily}`
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillText(label, px + pillW / 2, py + pillH / 2 + toUnits(1))
+      context.restore()
     }
   }
 
